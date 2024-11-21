@@ -13,4 +13,7 @@ public class UserDTO {
         this.nickName = nickName;
         this.icon = icon;
     }
+
+    public UserDTO() {
+    }
 }
