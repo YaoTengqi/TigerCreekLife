@@ -52,4 +52,17 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(shop), CACHE_SHOP_TTL, TimeUnit.MINUTES);
         return Result.ok(shop);
     }
+
+    @Override
+    public Result update(Shop shop) {
+        Long id = shop.getId();
+        if (id == null) {
+            return Result.fail("Shop is not exist!");
+        }
+        // 1. 更新数据库
+        updateById(shop);
+        // 2. 删除缓存
+        stringRedisTemplate.delete(CACHE_SHOP_KEY + id);
+        return Result.ok();
+    }
 }
