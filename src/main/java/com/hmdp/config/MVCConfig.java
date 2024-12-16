@@ -30,7 +30,7 @@ public class MVCConfig implements WebMvcConfigurer {
                 "/shop/**",
                 "/blog/hot",
                 "/shop-type/**",
-                "/vocher/**"
+                "/voucher/**"
         ).order(1);
     }
 }
