@@ -9,6 +9,7 @@ import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
+import org.springframework.aop.framework.AopContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -35,11 +36,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private RedisIdWorker redisIdWorker;
 
     @Override
-    @Transactional  // 由于是两张表的操作(优惠券表和订单表) 因此需要增加事务机制
     public Result seckillVoucher(Long voucherId) {
         // 1. 查询优惠券
         SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
-        if(voucher == null){
+        if (voucher == null) {
             return Result.fail("没有这个优惠券!");
         }
         // 2. 判断秒杀是否开始
@@ -55,13 +55,33 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if (voucher.getStock() < 1) {
             return Result.fail("库存不足!");
         }
+
+        Long userId = UserHolder.getUser().getId();
+        synchronized (userId.toString().intern()) {  // 从线程池中查找是否存在同一个userId
+            // 事务的代理是交给spring的, 但是在这里执行的对象是this, 而非动态代理对象因此无法完成事务的操控
+            // 需要申请一个动态代理
+            IVoucherOrderService currentProxy = (IVoucherOrderService) AopContext.currentProxy();
+            return currentProxy.createVoucherOrder(voucherId);
+        }
+
+    }
+
+    @Transactional  // 由于是两张表的操作(优惠券表和订单表) 因此需要增加事务机制
+    public Result createVoucherOrder(Long voucherId) {
+        // 一人一单
+        Long userId = UserHolder.getUser().getId();
+        int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
+        if (count > 0) {
+            // 该用户已经买过一次秒杀券
+            return Result.fail("您已买过此优惠券!");
+        }
         // 5. 扣减库存
         boolean success = seckillVoucherService.update()
                 .setSql("stock = stock - 1")
                 .gt("stock", 0) // CAS乐观锁, 当货品数量大于0时扣除库存, 否则在操作数据库前进行检查
                 .eq("voucher_id", voucherId)
                 .update();
-        if(!success){
+        if (!success) {
             return Result.fail("库存不足!");
         }
         // 6. 创建订单
@@ -70,7 +90,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         long orderId = redisIdWorker.nextId("order");
         voucherOrder.setId(orderId);
         // 6.2 用户id
-        Long userId = UserHolder.getUser().getId();
         voucherOrder.setUserId(userId);
         // 6.3 代金券id
         voucherOrder.setVoucherId(voucherId);
