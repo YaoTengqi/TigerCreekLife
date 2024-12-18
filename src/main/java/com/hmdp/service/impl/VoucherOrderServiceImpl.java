@@ -39,6 +39,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     public Result seckillVoucher(Long voucherId) {
         // 1. 查询优惠券
         SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
+        if(voucher == null){
+            return Result.fail("没有这个优惠券!");
+        }
         // 2. 判断秒杀是否开始
         if (voucher.getBeginTime().isAfter(LocalDateTime.now())) {
             // 还没有开始
@@ -53,10 +56,14 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足!");
         }
         // 5. 扣减库存
-        seckillVoucherService.update()
+        boolean success = seckillVoucherService.update()
                 .setSql("stock = stock - 1")
+                .gt("stock", 0) // CAS乐观锁, 当货品数量大于0时扣除库存, 否则在操作数据库前进行检查
                 .eq("voucher_id", voucherId)
                 .update();
+        if(!success){
+            return Result.fail("库存不足!");
+        }
         // 6. 创建订单
         VoucherOrder voucherOrder = new VoucherOrder();
         // 6.1 订单id
