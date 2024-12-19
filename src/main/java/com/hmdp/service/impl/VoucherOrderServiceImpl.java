@@ -8,8 +8,10 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.RedisLock;
 import com.hmdp.utils.UserHolder;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -35,6 +37,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedisIdWorker redisIdWorker;
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
     @Override
     public Result seckillVoucher(Long voucherId) {
         // 1. 查询优惠券
@@ -57,11 +62,19 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
 
         Long userId = UserHolder.getUser().getId();
-        synchronized (userId.toString().intern()) {  // 从线程池中查找是否存在同一个userId
-            // 事务的代理是交给spring的, 但是在这里执行的对象是this, 而非动态代理对象因此无法完成事务的操控
-            // 需要申请一个动态代理
+        RedisLock redisLock = new RedisLock("order:" + userId, stringRedisTemplate);
+        boolean isLock = redisLock.tryLock(1200);
+        if (!isLock) {
+            // 未能获取锁
+            return Result.fail("您已买过此优惠券!");
+        }
+        // 事务的代理是交给spring的, 但是在这里执行的对象是this, 而非动态代理对象因此无法完成事务的操控
+        // 需要申请一个动态代理
+        try {
             IVoucherOrderService currentProxy = (IVoucherOrderService) AopContext.currentProxy();
             return currentProxy.createVoucherOrder(voucherId);
+        } finally {
+            redisLock.unlock(); // 最终释放锁
         }
 
     }
