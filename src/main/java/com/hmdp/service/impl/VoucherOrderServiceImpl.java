@@ -13,7 +13,9 @@ import com.hmdp.utils.UserHolder;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -21,6 +23,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.Collections;
 
 /**
  * <p>
@@ -45,44 +48,37 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedissonClient redissonClient;
 
+    private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+
+    // 初始化加载lua脚本
+    static {
+        SECKILL_SCRIPT = new DefaultRedisScript();
+        SECKILL_SCRIPT.setLocation(new ClassPathResource("seckill.lua"));
+        SECKILL_SCRIPT.setResultType(Long.class);
+    }
+
     @Override
     public Result seckillVoucher(Long voucherId) {
-        // 1. 查询优惠券
-        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
-        if (voucher == null) {
-            return Result.fail("没有这个优惠券!");
-        }
-        // 2. 判断秒杀是否开始
-        if (voucher.getBeginTime().isAfter(LocalDateTime.now())) {
-            // 还没有开始
-            return Result.fail("秒杀尚未开始!");
-        }
-        // 3. 判断秒杀是否结束
-        if (voucher.getEndTime().isBefore(LocalDateTime.now())) {
-            return Result.fail("秒杀已经结束!");
-        }
-        // 4. 判断库存是否充足
-        if (voucher.getStock() < 1) {
-            return Result.fail("库存不足!");
-        }
-
+        // 获取用户信息
         Long userId = UserHolder.getUser().getId();
-//        RedisLock redisLock = new RedisLock("order:" + userId, stringRedisTemplate);
-        RLock redisLock = redissonClient.getLock("order:" + userId);
-        boolean isLock = redisLock.tryLock();
-        if (!isLock) {
-            // 未能获取锁
-            return Result.fail("您已买过此优惠券!");
+        // 1. 执行lua脚本
+        Long result = stringRedisTemplate.execute(
+                SECKILL_SCRIPT,
+                Collections.emptyList(),
+                voucherId.toString(),
+                userId.toString()
+        );
+        // 2. 根据返回值进行判断
+        // 2.1 不为 0则返回异常信息
+        if (result != 0) {
+            return result == 1 ? Result.fail("库存不足!") : Result.fail("您已购买过此优惠券!");
         }
-        // 事务的代理是交给spring的, 但是在这里执行的对象是this, 而非动态代理对象因此无法完成事务的操控
-        // 需要申请一个动态代理
-        try {
-            IVoucherOrderService currentProxy = (IVoucherOrderService) AopContext.currentProxy();
-            return currentProxy.createVoucherOrder(voucherId);
-        } finally {
-            redisLock.unlock(); // 最终释放锁
-        }
+        // 2.2 为 0则正常下单
+        long orderId = redisIdWorker.nextId("order");
 
+        // 3. 将订单信息添加到消息队列
+        // 4. 返回订单id
+        return Result.ok(orderId);
     }
 
     @Transactional  // 由于是两张表的操作(优惠券表和订单表) 因此需要增加事务机制
